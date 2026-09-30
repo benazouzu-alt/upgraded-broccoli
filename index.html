@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HABIB_Scal_correy correlation</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+body{margin:0;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);font-family:Arial,sans-serif;background:#f4f6f8;color:#17202a}
+header{background:#12344d;color:white;padding:18px;text-align:center}
+header h1{margin:0;font-size:24px}
+.container{max-width:1100px;margin:auto;padding:20px}
+.card{background:white;border-radius:12px;padding:20px;margin-bottom:20px;box-shadow:0 3px 10px rgba(0,0,0,.08)}
+h2{margin-top:0}
+label{display:block;font-weight:bold;margin-top:12px}
+input,select{width:100%;padding:10px;margin-top:5px;border:1px solid #ccc;border-radius:7px;box-sizing:border-box}
+button{padding:11px 17px;border:none;border-radius:7px;cursor:pointer;margin-top:15px}
+.primary{background:#087ea4;color:white}
+.secondary{background:#e5edf2}
+.success{background:#e8f7ee;padding:12px;border-radius:7px}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{border:1px solid #ddd;padding:8px;text-align:center}
+th{background:#eaf0f4}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:15px}
+.hidden{display:none}
+.metric{text-align:center;background:#f1f6f9;padding:15px;border-radius:10px}
+.metric strong{display:block;font-size:25px}
+canvas{margin-top:20px}
+</style>
+</head>
+<body>
+<header><h1>HABIB_Scal_correy correlation</h1><p>Water-Oil Corey Correlation</p></header>
+<div class="container">
+
+<div class="card">
+<h2>1. Project</h2>
+<label>Project Name</label><input id="projectName" placeholder="SCAL Study">
+<label>Reservoir</label><input id="reservoir" placeholder="Reservoir name">
+<br><button class="primary" onclick="startProgram()">START</button>
+</div>
+
+<div class="card hidden" id="importCard">
+<h2>2. Excel Import</h2>
+<p>Your Excel file must contain: <strong>Sw, Krw, Kro</strong></p>
+<input type="file" id="excelFile" accept=".xlsx,.xls,.csv">
+<div id="mapping"></div>
+</div>
+
+<div class="card hidden" id="dataCard">
+<h2>3. Imported Data</h2>
+<div id="dataInfo"></div><div id="dataTable"></div>
+<h3>Imported curves</h3><canvas id="rawChart"></canvas>
+</div>
+
+<div class="card hidden" id="qcCard">
+<h2>4. QC & Data Correction</h2>
+<div id="qcResults"></div>
+<button class="secondary" onclick="correctData()">Correct Data</button>
+</div>
+
+<div class="card hidden" id="normCard">
+<h2>5. Normalization</h2>
+<div class="grid">
+<div><label>Swir</label><input id="swir" type="number" step="0.001" value="0.20" oninput="autoRun()"></div>
+<div><label>Sor</label><input id="sor" type="number" step="0.001" value="0.25" oninput="autoRun()"></div>
+</div>
+<div id="autoNote"></div>
+<button class="primary" onclick="normalizeData()">NORMALIZE</button>
+<div id="normResult"></div>
+<canvas id="normChart"></canvas>
+</div>
+
+<div class="card hidden" id="coreyCard">
+<h2>6. Corey Correlation</h2>
+<button class="primary" onclick="calculateCorey()">FIT COREY</button>
+<div id="coreyResults"></div>
+<canvas id="fitChart"></canvas>
+</div>
+
+<div class="card hidden" id="averageCard">
+<h2>7. Averaging</h2>
+<p>For a single Excel curve, averaging is not required. If the Excel contains multiple curves separated into datasets, the same framework can later average them.</p>
+<button class="primary" onclick="calculateAverage()">CALCULATE AVERAGE</button>
+<div id="averageResult"></div>
+</div>
+
+<div class="card hidden" id="resultsCard">
+<h2>8. Results</h2>
+<div class="grid">
+<div class="metric"><strong id="nwResult">-</strong>Corey nw</div>
+<div class="metric"><strong id="noResult">-</strong>Corey no</div>
+<div class="metric"><strong id="krwendResult">-</strong>Krw endpoint</div>
+<div class="metric"><strong id="kroendResult">-</strong>Kro endpoint</div>
+</div>
+<canvas id="coreyChart"></canvas>
+</div>
+
+<div class="card hidden" id="exportCard">
+<h2>9. Export</h2>
+<button class="primary" onclick="exportExcel()">EXPORT EXCEL</button>
+<button class="primary" onclick="exportPDF()">EXPORT PDF</button>
+</div>
+
+</div>
+
+<script>
+let data=[],normalized=[],nw=null,no=null,krwEnd=null,kroEnd=null,chart=null;
+const $=id=>document.getElementById(id);
+Chart.register({id:"bg",beforeDraw(c){const x=c.ctx;x.save();x.globalCompositeOperation="destination-over";x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.restore();}});
+const charts={};
+const pts=(rows,xk,yk)=>rows.map(r=>({x:r[xk],y:r[yk]}));
+Chart.defaults.font.family="Arial,sans-serif";Chart.defaults.color="#17202a";
+Chart.register({id:"frame",afterDraw(c){const a=c.chartArea,x=c.ctx;x.save();x.strokeStyle="#12344d";x.lineWidth=1.3;x.strokeRect(a.left,a.top,a.right-a.left,a.bottom-a.top);x.restore();}});
+function pd(label,points,color,line,pr,dash){
+  const m=pr??(line?0:5);
+  return{label,data:points,borderColor:color,backgroundColor:color,showLine:!!line,pointRadius:m,pointHoverRadius:m+2,
+    pointStyle:/Kro/.test(label)?"rect":"circle",pointBackgroundColor:color,pointBorderColor:"#fff",pointBorderWidth:1,
+    borderWidth:dash?1.6:2.4,borderDash:dash||[],tension:0};
+}
+function plot(id,datasets,xt,yt,title){
+  if(charts[id])charts[id].destroy();
+  const ym=Math.max(...datasets.flatMap(d=>d.data.map(p=>p.y)));
+  const grid={color:"rgba(18,52,77,.10)"},ttl=t=>({display:true,text:t,color:"#12344d",font:{weight:"bold",size:13}});
+  const tk={callback:v=>Number(v).toFixed(1),color:"#333"};
+  charts[id]=new Chart($(id),{type:"scatter",data:{datasets},options:{responsive:true,animation:false,aspectRatio:1.25,
+    interaction:{mode:"nearest",intersect:false},layout:{padding:8},
+    plugins:{title:{display:true,text:title,color:"#12344d",font:{size:15,weight:"bold"},padding:{bottom:10}},
+      legend:{position:"top",labels:{usePointStyle:true,boxWidth:9,padding:12,font:{size:12}}},
+      tooltip:{backgroundColor:"#12344d",padding:10,callbacks:{label:c=>`${c.dataset.label}: (${c.parsed.x.toFixed(3)}, ${c.parsed.y.toFixed(3)})`}}},
+    scales:{x:{type:"linear",min:0,max:1,grid,ticks:{...tk,stepSize:.1},title:ttl(xt)},
+            y:{min:0,max:ym<=1?Math.min(1,Math.ceil(ym*10)/10):undefined,grid,ticks:{...tk,maxTicksLimit:11},title:ttl(yt)}}}});
+}
+function autoRun(){
+  normalizeData();
+  if(!normalized.length)return;
+  calculateCorey();
+  if(nw!==null)calculateAverage();
+}
+function autoEndpoints(){
+  const sw=data.map(r=>r.Sw);
+  return{swir:Math.min(...sw),sor:1-Math.max(...sw)};
+}
+
+function startProgram(){
+  $("importCard").classList.remove("hidden");
+  window.scrollTo({top:$("importCard").offsetTop,behavior:"smooth"});
+}
+
+$("excelFile").addEventListener("change",function(e){
+  const file=e.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(ev){
+    const wb=XLSX.read(ev.target.result,{type:"array"});
+    const sheet=wb.Sheets[wb.SheetNames[0]];
+    const json=XLSX.utils.sheet_to_json(sheet,{defval:null});
+    if(json.length===0){alert("Excel file is empty.");return;}
+    window._json=json;
+    detectColumns(json);
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+function detectColumns(json){
+  const headers=Object.keys(json[0]);
+  $("mapping").innerHTML=`
+  <h3>Column Mapping</h3>
+  <div class="grid">
+  <div><label>Sw</label><select id="swColumn">${createOptions(headers,findColumn(headers,"sw"))}</select></div>
+  <div><label>Krw</label><select id="krwColumn">${createOptions(headers,findColumn(headers,"krw"))}</select></div>
+  <div><label>Kro</label><select id="kroColumn">${createOptions(headers,findColumn(headers,"kro"))}</select></div>
+  </div>
+  <button class="primary" onclick="loadMappedData(window._json)">IMPORT DATA</button>`;
+}
+
+function findColumn(headers,target){
+  return headers.find(h=>String(h).toLowerCase().replace(/\s/g,"").includes(target))||"";
+}
+
+function createOptions(headers,selected){
+  return headers.map(h=>`<option value="${h}" ${h===selected?"selected":""}>${h}</option>`).join("");
+}
+
+function loadMappedData(json){
+  const s=$("swColumn").value,w=$("krwColumn").value,o=$("kroColumn").value;
+  data=json.map(r=>({Sw:Number(r[s]),Krw:Number(r[w]),Kro:Number(r[o])}))
+    .filter(r=>Number.isFinite(r.Sw)&&Number.isFinite(r.Krw)&&Number.isFinite(r.Kro))
+    .sort((a,b)=>a.Sw-b.Sw);
+  $("dataCard").classList.remove("hidden");
+  $("dataInfo").innerHTML=`<div class="success">${data.length} valid data points imported.</div>`;
+  showTable();
+  $("qcCard").classList.remove("hidden");
+  runQC();
+}
+
+function showTable(){
+  let html="<table><tr><th>Sw</th><th>Krw</th><th>Kro</th></tr>";
+  data.slice(0,100).forEach(r=>{html+=`<tr><td>${r.Sw}</td><td>${r.Krw}</td><td>${r.Kro}</td></tr>`;});
+  $("dataTable").innerHTML=html+"</table>";
+}
+
+function runQC(){
+  let swRange=0,krRange=0;
+  data.forEach(r=>{
+    if(r.Sw<0||r.Sw>1)swRange++;
+    if(r.Krw<0||r.Krw>1)krRange++;
+    if(r.Kro<0||r.Kro>1)krRange++;
+  });
+  $("qcResults").innerHTML=`<div class="grid">
+  <div class="metric"><strong>${data.length}</strong>Data Points</div>
+  <div class="metric"><strong>${swRange}</strong>Sw outside 0–1</div>
+  <div class="metric"><strong>${krRange}</strong>Kr outside 0–1</div></div>`;
+  $("normCard").classList.remove("hidden");
+  if(data.length){
+    const e=autoEndpoints();
+    $("swir").value=e.swir.toFixed(4);$("sor").value=e.sor.toFixed(4);
+    $("autoNote").innerHTML=`<div class="success">Swir and Sor were detected automatically: Swir = ${e.swir.toFixed(4)}, Sor = ${e.sor.toFixed(4)} (editable, results update instantly)</div>`;
+    const mk=Math.max(...data.map(r=>Math.max(r.Krw,r.Kro)));
+    plot("rawChart",[pd("Krw",pts(data,"Sw","Krw"),"#1c7ed6",true,3),pd("Kro",pts(data,"Sw","Kro"),"#d6336c",true,3),
+      pd("Swir = "+e.swir.toFixed(3),[{x:e.swir,y:0},{x:e.swir,y:mk}],"#2b8a3e",true,0,[6,5]),
+      pd("Sor = "+e.sor.toFixed(3),[{x:1-e.sor,y:0},{x:1-e.sor,y:mk}],"#c92a2a",true,0,[6,5])],"Water saturation, Sw","Relative permeability, Kr","Water-Oil Relative Permeability - Imported Data");
+    autoRun();
+  }
+}
+
+function correctData(){
+  const c=v=>Math.max(0,Math.min(1,v));
+  data.forEach(r=>{r.Sw=c(r.Sw);r.Krw=c(r.Krw);r.Kro=c(r.Kro);});
+  runQC();showTable();
+}
+
+function normalizeData(){
+  const swir=Number($("swir").value),sor=Number($("sor").value);
+  normalized=[];
+  if(swir+sor>=1){alert("Swir + Sor must be < 1");return;}
+  normalized=data.map(r=>({Sw:r.Sw,Swstar:(r.Sw-swir)/(1-swir-sor),Krw:r.Krw,Kro:r.Kro}));
+  $("normResult").innerHTML='<div class="success">Normalization completed.</div>';
+  plot("normChart",[pd("Krw",pts(normalized,"Swstar","Krw"),"#1c7ed6",true,3),pd("Kro",pts(normalized,"Swstar","Kro"),"#d6336c",true,3)],"Normalized water saturation, Sw*","Relative permeability, Kr","Normalized Relative Permeability");
+  $("coreyCard").classList.remove("hidden");
+}
+
+function regression(x,y){
+  const n=x.length,lx=x.map(Math.log),ly=y.map(Math.log);
+  const mx=lx.reduce((a,b)=>a+b,0)/n,my=ly.reduce((a,b)=>a+b,0)/n;
+  let num=0,den=0;
+  for(let i=0;i<n;i++){num+=(lx[i]-mx)*(ly[i]-my);den+=Math.pow(lx[i]-mx,2);}
+  const slope=num/den,A=Math.exp(my-slope*mx);
+  const pred=x.map(v=>A*Math.pow(v,slope));
+  const mean=y.reduce((a,b)=>a+b,0)/n;
+  let ssRes=0,ssTot=0;
+  for(let i=0;i<n;i++){ssRes+=Math.pow(y[i]-pred[i],2);ssTot+=Math.pow(y[i]-mean,2);}
+  return{exponent:slope,endpoint:A,r2:1-ssRes/ssTot,rmse:Math.sqrt(ssRes/n)};
+}
+
+function calculateCorey(){
+  nw=null;
+  const water=normalized.filter(r=>r.Swstar>0&&r.Swstar<1&&r.Krw>0);
+  const oil=normalized.filter(r=>(1-r.Swstar)>0&&(1-r.Swstar)<1&&r.Kro>0);
+  if(water.length<2||oil.length<2){alert("Not enough valid data for Corey fitting.");return;}
+  const wf=regression(water.map(r=>r.Swstar),water.map(r=>r.Krw));
+  const of=regression(oil.map(r=>1-r.Swstar),oil.map(r=>r.Kro));
+  nw=wf.exponent;no=of.exponent;krwEnd=wf.endpoint;kroEnd=of.endpoint;
+  $("coreyResults").innerHTML=`<div class="grid">
+  <div class="metric"><strong>${nw.toFixed(4)}</strong>nw</div>
+  <div class="metric"><strong>${no.toFixed(4)}</strong>no</div>
+  <div class="metric"><strong>${krwEnd.toFixed(4)}</strong>Krw endpoint</div>
+  <div class="metric"><strong>${kroEnd.toFixed(4)}</strong>Kro endpoint</div>
+  <div class="metric"><strong>${wf.r2.toFixed(4)}</strong>R² water</div>
+  <div class="metric"><strong>${of.r2.toFixed(4)}</strong>R² oil</div></div>`;
+  $("averageCard").classList.remove("hidden");
+  drawFit("fitChart");
+}
+
+function calculateAverage(){
+  $("averageResult").innerHTML='<div class="success">Corey parameters calculated from the available experimental curve.</div>';
+  $("resultsCard").classList.remove("hidden");
+  $("exportCard").classList.remove("hidden");
+  showResults();
+}
+
+function drawFit(id){
+  const x=Array.from({length:101},(_,i)=>i/100);
+  plot(id,[
+    pd("Measured Krw",pts(normalized,"Swstar","Krw"),"#1c7ed6",false,4),
+    pd("Measured Kro",pts(normalized,"Swstar","Kro"),"#d6336c",false,4),
+    pd("Corey Krw",x.map(v=>({x:v,y:krwEnd*Math.pow(v,nw)})),"#1864ab",true),
+    pd("Corey Kro",x.map(v=>({x:v,y:kroEnd*Math.pow(1-v,no)})),"#a61e4d",true)
+  ],"Normalized water saturation, Sw*","Relative permeability, Kr","Corey Correlation Fit (nw = "+nw.toFixed(2)+", no = "+no.toFixed(2)+")");
+}
+function showResults(){
+  $("nwResult").textContent=nw.toFixed(4);
+  $("noResult").textContent=no.toFixed(4);
+  $("krwendResult").textContent=krwEnd.toFixed(4);
+  $("kroendResult").textContent=kroEnd.toFixed(4);
+  drawFit("coreyChart");
+}
+
+async function saveFile(name,data){
+  if(!(window.claude&&window.claude.use)){
+    const u=URL.createObjectURL(data),l=document.createElement("a");
+    l.href=u;l.download=name;document.body.appendChild(l);l.click();l.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),3000);return;
+  }
+  try{
+    const dl=await claude.use("downloads");
+    if(!dl){alert("Download is not available in this view.");return;}
+    await dl.save({filename:name,data});
+  }catch(e){if(!e||e.code!=="declined")alert("Export failed: "+((e&&e.message)||e));}
+}
+function curveRows(){
+  const swir=Number($("swir").value),sor=Number($("sor").value),r=[];
+  for(let i=0;i<=100;i++){const t=i/100;
+    r.push({Sw:t*(1-swir-sor)+swir,Sw_normalized:t,Krw:krwEnd*Math.pow(t,nw),Kro:kroEnd*Math.pow(1-t,no)});}
+  return r;
+}
+async function exportExcel(){
+  const swir=Number($("swir").value),sor=Number($("sor").value);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(curveRows()),"Corey_Result");
+  const params=[{Parameter:"Swir",Value:swir},{Parameter:"Sor",Value:sor},{Parameter:"nw",Value:nw},
+    {Parameter:"no",Value:no},{Parameter:"Krw_endpoint",Value:krwEnd},{Parameter:"Kro_endpoint",Value:kroEnd}];
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(params),"Corey_Parameters");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(normalized),"Measured_Normalized");
+  await saveFile("SCAL_Corey_Result.xlsx",new Blob([XLSX.write(wb,{bookType:"xlsx",type:"array"})]));
+}
+async function exportPDF(){
+  const d=new window.jspdf.jsPDF({unit:"mm",format:"a4"});
+  const swir=Number($("swir").value),sor=Number($("sor").value);
+  let y=15;
+  d.setFontSize(16);d.text("HABIB_Scal_correy correlation - Report",14,y);y+=8;
+  d.setFontSize(10);
+  d.text("Project: "+($("projectName").value||"-")+"    Reservoir: "+($("reservoir").value||"-"),14,y);y+=6;
+  d.text(`Swir = ${swir.toFixed(4)}   Sor = ${sor.toFixed(4)}   nw = ${nw.toFixed(4)}   no = ${no.toFixed(4)}`,14,y);y+=6;
+  d.text(`Krw endpoint = ${krwEnd.toFixed(4)}   Kro endpoint = ${kroEnd.toFixed(4)}`,14,y);y+=8;
+  [["rawChart","1. Imported data"],["normChart","2. Normalized data"],["coreyChart","3. Corey fit"]].forEach(([id,t])=>{
+    if(!charts[id])return;
+    const c=charts[id],h=170*c.height/c.width;
+    if(y+h+10>285){d.addPage();y=15;}
+    d.setFontSize(11);d.text(t,14,y);y+=3;
+    d.addImage(c.toBase64Image("image/png",1),"PNG",14,y,170,h);y+=h+7;
+  });
+  d.addPage();y=15;d.setFontSize(11);d.text("Corey curve table",14,y);y+=7;d.setFontSize(9);
+  [["Sw",14],["Sw*",54],["Krw",94],["Kro",134]].forEach(([h,x])=>d.text(h,x,y));y+=5;
+  curveRows().filter((_,i)=>i%5===0).forEach(r=>{
+    [[r.Sw,14],[r.Sw_normalized,54],[r.Krw,94],[r.Kro,134]].forEach(([v,x])=>d.text(v.toFixed(4),x,y));y+=5;
+  });
+  await saveFile("SCAL_Corey_Report.pdf",d.output("blob"));
+}
+</script>
+</body>
+</html>
